@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: fitbook-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fitbook
+      POSTGRES_USER: fitbook
+      POSTGRES_PASSWORD: fitbook_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - fitbook_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  fitbook_postgres_data:
