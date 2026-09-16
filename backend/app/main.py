@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,8 +7,10 @@ from sqlalchemy import text
 
 from app.db.database import engine, SessionLocal
 from app.models.booking import Booking
+from app.models.trainer import Trainer
+from app.models.availability import Availability
 from app.telegram_auth import validate_telegram_init_data
-
+from app.config import settings
 
 app = FastAPI(title="FitBook API")
 
@@ -18,7 +20,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://6cb3-178-212-106-203.ngrok-free.app",
+        settings.frontend_url,
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -50,6 +52,53 @@ def health_check():
         }
 
 
+class TrainerCreate(BaseModel):
+    name: str
+    image_url: str
+    specialty: str
+    bio: str
+    price: float
+    rating: float
+    experience_years: int
+    sessions_count: int
+
+
+@app.post("/trainers")
+def create_trainer(trainer_data: TrainerCreate):
+    db = SessionLocal()
+
+    try:
+        trainer = Trainer(
+            name=trainer_data.name,
+            image_url=trainer_data.image_url,
+            specialty=trainer_data.specialty,
+            bio=trainer_data.bio,
+            price=trainer_data.price,
+            rating=trainer_data.rating,
+            experience_years=trainer_data.experience_years,
+            sessions_count=trainer_data.sessions_count,
+        )
+
+        db.add(trainer)
+        db.commit()
+        db.refresh(trainer)
+
+        return {
+            "id": trainer.id,
+            "name": trainer.name,
+            "image_url": trainer.image_url,
+            "specialty": trainer.specialty,
+            "bio": trainer.bio,
+            "price": float(trainer.price),
+            "rating": float(trainer.rating),
+            "experience_years": trainer.experience_years,
+            "sessions_count": trainer.sessions_count,
+        }
+
+    finally:
+        db.close()
+
+
 @app.get("/trainers")
 def get_trainers():
     with engine.connect() as connection:
@@ -58,6 +107,7 @@ def get_trainers():
                 SELECT
                     id,
                     name,
+                    image_url,
                     specialty,
                     bio,
                     price,
@@ -72,6 +122,7 @@ def get_trainers():
             {
                 "id": row.id,
                 "name": row.name,
+                "image_url": row.image_url,
                 "specialty": row.specialty,
                 "bio": row.bio,
                 "price": float(row.price),
@@ -117,6 +168,68 @@ def get_availability(trainer_id: int):
             }
             for row in result
         ]
+
+
+class AvailabilityCreate(BaseModel):
+    date: date
+    start_time: time
+
+
+@app.post("/trainers/{trainer_id}/availability")
+def create_availability(
+    trainer_id: int,
+    availability_data: AvailabilityCreate,
+):
+    db = SessionLocal()
+
+    try:
+        trainer = (
+            db.query(Trainer)
+            .filter(Trainer.id == trainer_id)
+            .first()
+        )
+
+        if not trainer:
+            raise HTTPException(
+                status_code=404,
+                detail="Trainer not found.",
+            )
+
+        existing_slot = (
+            db.query(Availability)
+            .filter(
+                Availability.trainer_id == trainer_id,
+                Availability.date == availability_data.date,
+                Availability.start_time == availability_data.start_time,
+            )
+            .first()
+        )
+
+        if existing_slot:
+            raise HTTPException(
+                status_code=409,
+                detail="This availability slot already exists.",
+            )
+
+        availability = Availability(
+            trainer_id=trainer_id,
+            date=availability_data.date,
+            start_time=availability_data.start_time,
+        )
+
+        db.add(availability)
+        db.commit()
+        db.refresh(availability)
+
+        return {
+            "id": availability.id,
+            "trainer_id": availability.trainer_id,
+            "date": availability.date,
+            "start_time": availability.start_time,
+        }
+
+    finally:
+        db.close()
 
 
 class BookingCreate(BaseModel):
@@ -194,7 +307,9 @@ def create_booking(booking_data: BookingCreate):
 
 @app.get("/bookings")
 def get_bookings(init_data: str):
-    telegram_user = validate_telegram_init_data(init_data)
+    telegram_user = validate_telegram_init_data(
+        init_data
+    )
 
     telegram_user_id = telegram_user["id"]
 
@@ -202,7 +317,11 @@ def get_bookings(init_data: str):
 
     try:
         bookings = (
-            db.query(Booking)
+            db.query(Booking, Trainer)
+            .join(
+                Trainer,
+                Booking.trainer_id == Trainer.id,
+            )
             .filter(
                 Booking.telegram_user_id == telegram_user_id,
                 Booking.status == "confirmed",
@@ -218,13 +337,14 @@ def get_bookings(init_data: str):
             {
                 "id": booking.id,
                 "trainer_id": booking.trainer_id,
+                "trainer_name": trainer.name,
                 "telegram_user_id": booking.telegram_user_id,
                 "customer_name": booking.customer_name,
                 "date": booking.date,
                 "start_time": booking.start_time,
                 "status": booking.status,
             }
-            for booking in bookings
+            for booking, trainer in bookings
         ]
 
     finally:
@@ -236,7 +356,9 @@ def cancel_booking(
     booking_id: int,
     init_data: str,
 ):
-    telegram_user = validate_telegram_init_data(init_data)
+    telegram_user = validate_telegram_init_data(
+        init_data
+    )
 
     telegram_user_id = telegram_user["id"]
 
@@ -286,3 +408,79 @@ def telegram_auth(auth_data: TelegramAuthRequest):
         "message": "Telegram authentication successful.",
         "user": user,
     }
+
+class AvailabilityBulkCreate(BaseModel):
+    days: int = 5
+
+
+@app.post("/trainers/{trainer_id}/availability/bulk")
+def create_bulk_availability(
+    trainer_id: int,
+    availability_data: AvailabilityBulkCreate,
+):
+    db = SessionLocal()
+
+    try:
+        trainer = (
+            db.query(Trainer)
+            .filter(Trainer.id == trainer_id)
+            .first()
+        )
+
+        if not trainer:
+            raise HTTPException(
+                status_code=404,
+                detail="Trainer not found.",
+            )
+
+        times = [
+            time.fromisoformat("09:00"),
+            time.fromisoformat("10:30"),
+            time.fromisoformat("12:00"),
+            time.fromisoformat("14:00"),
+            time.fromisoformat("16:30"),
+            time.fromisoformat("18:00"),
+            time.fromisoformat("19:30"),
+        ]
+
+        created = 0
+
+        for day_offset in range(availability_data.days):
+            slot_date = date.today() + timedelta(
+                days=day_offset
+            )
+
+            for slot_time in times:
+                existing_slot = (
+                    db.query(Availability)
+                    .filter(
+                        Availability.trainer_id == trainer_id,
+                        Availability.date == slot_date,
+                        Availability.start_time == slot_time,
+                    )
+                    .first()
+                )
+
+                if existing_slot:
+                    continue
+
+                availability = Availability(
+                    trainer_id=trainer_id,
+                    date=slot_date,
+                    start_time=slot_time,
+                )
+
+                db.add(availability)
+                created += 1
+
+        db.commit()
+
+        return {
+            "message": "Availability created successfully.",
+            "trainer_id": trainer_id,
+            "days": availability_data.days,
+            "created_slots": created,
+        }
+
+    finally:
+        db.close()

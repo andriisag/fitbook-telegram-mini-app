@@ -18,6 +18,11 @@ class Trainer(Base):
         nullable=False,
     )
 
+    image_url: Mapped[str] = mapped_column(
+    String(500),
+    nullable=False,
+)
+
     specialty: Mapped[str] = mapped_column(
         String(150),
         nullable=False,
