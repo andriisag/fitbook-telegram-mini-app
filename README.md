@@ -4,21 +4,9 @@ A Telegram Mini App for discovering personal trainers and booking training sessi
 
 ## Preview
 
-### Home
+### Screenshots
 
-![FitBook Home](screenshots/home.jpg)
-
-### Trainers
-
-![FitBook Trainers](screenshots/trainers.jpg)
-
-### Booking
-
-![FitBook Booking](screenshots/booking.jpg)
-
-### My Bookings
-
-![FitBook My Bookings](screenshots/bookings.jpg)
+![FitBook Home](screenshots/fullscreen.png)
 
 ## Features
 
